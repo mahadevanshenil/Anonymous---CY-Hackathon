@@ -174,6 +174,7 @@
             </div>
         </div>
     </main>
+
     <script>
         lucide.createIcons();
         let rawFindings = []; 
@@ -217,7 +218,6 @@
                         const cveMatch = s.finding.match(/CVE:\s*([^|]+)/);
                         const cveId = cveMatch ? cveMatch[1].trim() : "Info / Unscored";
 
-                        // FIX: Assign 4h for real vulnerabilities, and 1h manual review time for Info-level noise.
                         const engEffort = rawCvss > 0 ? 4 : 1;
                         
                         let parsedUrl;
@@ -244,6 +244,8 @@
                 updateUI(); 
 
             } catch (err) {
+                // Ensure error box is red if a scan fails
+                alertBox.className = "bg-rose-500/10 border-b border-rose-500/30 text-rose-400 px-8 py-3 text-sm font-bold flex items-center gap-2";
                 alertBox.classList.remove("hidden");
                 alertMsg.textContent = err.message;
             } finally {
@@ -285,7 +287,6 @@
             let s2 = { tasks: [], riskCleared: 0 }; 
 
             sorted.forEach(task => {
-                // FIX: No more cvss > 0 filter here. ALL tasks can flow into Sprint 1 if capacity allows.
                 if (task.effort <= s1.remaining) {
                     s1.tasks.push(task);
                     s1.remaining -= task.effort;
@@ -310,7 +311,7 @@
             portsSection.classList.remove('hidden');
             
             portsContainer.innerHTML = rawPorts.map(portObj => {
-                const attachedVulns = findings.filter(f => f.port === portObj.port && f.cve !== 'Info / Unscored' && f.cve !== 'None');
+                const attachedVulns = findings.filter(f => f.port.includes(String(portObj.port)) && f.cve !== 'Info / Unscored' && f.cve !== 'None');
                 
                 let statusHtml = '';
                 let borderColor = 'border-bank';
@@ -382,6 +383,20 @@
             });
         }
 
+        // FEATURE 1: JIRA AUTOMATION (Copies beautifully formatted Markdown)
+        function copyToJira(title, asset, port, cve, cvss, effort) {
+            const ticketText = `[URGENT REMEDIATION REQUIRED]\n\nAsset: ${asset}:${port}\nVulnerability: ${title}\nCVE Identifier: ${cve}\nCVSS Base Score: ${cvss}\n\nAllocated Sprint Capacity: ${effort} hours\nAction: Please review scanner output and apply patches/configurations.`;
+            navigator.clipboard.writeText(ticketText).then(() => {
+                const alertBox = document.getElementById("alertBanner");
+                const alertMsg = document.getElementById("alertText");
+                alertMsg.innerText = "Jira Ticket generated and copied to clipboard!";
+                // Make the alert banner green for success
+                alertBox.className = "bg-emerald-500/10 border-b border-emerald-500/30 text-emerald-400 px-8 py-3 text-sm font-bold flex items-center gap-2";
+                alertBox.classList.remove("hidden");
+                setTimeout(() => alertBox.classList.add("hidden"), 3500);
+            });
+        }
+
         function updateUI() {
             if (rawFindings.length === 0 && rawPorts.length === 0) return;
 
@@ -428,15 +443,21 @@
             document.getElementById('cyberScoreVal').className = `text-4xl font-bold transition-colors duration-500 ${scoreColorClass}`;
 
             document.getElementById('s1Capacity').innerHTML = plan.s1.remaining + 'h <span class="text-xs text-slate-500">remaining</span>';
+            
             document.getElementById('sprint1Container').innerHTML = plan.s1.tasks.map(t => {
-                // FIX: Support the grey 'Info' badge inside Sprint 1 when items flow over
                 let badgeHtml = t.brs > 0 
                     ? `<span class="bg-rose-500/10 text-rose-400 border border-rose-500/30 px-2 py-1 rounded text-xs font-bold shadow-[0_0_10px_rgba(244,63,94,0.1)]">${t.brs.toFixed(1)} BRS</span>`
                     : `<span class="bg-slate-700/50 text-slate-400 border border-slate-600 px-2 py-1 rounded text-xs font-bold">Info</span>`;
                 
-                return `<div class="bg-[#0b1021] p-3 rounded border border-blue-900/40 flex justify-between items-center transition-all">
-                    <div>
-                        <h4 class="text-sm font-semibold ${t.brs > 0 ? 'text-slate-200' : 'text-slate-400'}">${t.title}</h4>
+                // HOVER COPY BUTTON HTML ADDED HERE
+                return `<div class="bg-[#0b1021] p-3 rounded border border-blue-900/40 flex justify-between items-center transition-all group">
+                    <div class="flex-1">
+                        <div class="flex items-center gap-2">
+                            <h4 class="text-sm font-semibold ${t.brs > 0 ? 'text-slate-200' : 'text-slate-400'} truncate max-w-[200px]">${t.title}</h4>
+                            <button onclick="copyToJira('${t.title.replace(/'/g, "\\'")}', '${t.asset}', '${t.port}', '${t.cve}', '${t.cvss}', ${t.effort})" class="opacity-0 group-hover:opacity-100 transition-opacity text-blue-400 hover:text-white" title="Copy to Jira">
+                                <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+                            </button>
+                        </div>
                         <p class="text-xs font-mono text-blue-400 mt-1">${t.asset}:${t.port} • ${t.effort}h Baseline</p>
                     </div>
                     ${badgeHtml}
@@ -465,10 +486,18 @@
                 let displayBrs = item.brs > 0 ? item.brs.toFixed(1) : 'Nil';
                 let cvssColor = item.cvss >= 9.0 ? 'text-rose-400' : (item.cvss > 0 ? 'text-slate-300' : 'text-slate-500 opacity-60');
 
+                // FEATURE 2: DYNAMIC COMPLIANCE BADGES
+                let complianceBadge = "";
+                if (item.title.toLowerCase().includes("header") || item.title.toLowerCase().includes("csrf")) {
+                    complianceBadge = `<span class="bg-purple-500/10 text-purple-400 border border-purple-500/30 px-1.5 py-0.5 rounded text-[9px] font-bold mt-1 inline-block uppercase">PCI-DSS Req 6.5</span>`;
+                } else if (item.cvss >= 7.0) {
+                    complianceBadge = `<span class="bg-rose-500/10 text-rose-400 border border-rose-500/30 px-1.5 py-0.5 rounded text-[9px] font-bold mt-1 inline-block uppercase">ISO 27001 Breach Risk</span>`;
+                }
+
                 return `<tr class="hover:bg-slate-800/30 transition border-b border-bank last:border-0">
                     <td class="py-3 px-6 whitespace-nowrap">${shiftHtml}</td>
                     <td class="py-3 px-6"><div class="font-bold text-slate-200">${item.asset}</div><div class="text-[10px] font-mono text-slate-500">${item.ip} - Port ${item.port}</div></td>
-                    <td class="py-3 px-6"><div class="font-medium text-slate-300">${item.title}</div><span class="text-[10px] font-mono bg-slate-800 ${item.cve !== 'Info / Unscored' && item.cve !== 'None' ? 'text-blue-400 border-blue-800' : 'text-slate-400 border-slate-700'} px-1.5 py-0.5 rounded border mt-1 inline-block">${item.cve}</span></td>
+                    <td class="py-3 px-6"><div class="font-medium text-slate-300">${item.title}</div><span class="text-[10px] font-mono bg-slate-800 ${item.cve !== 'Info / Unscored' && item.cve !== 'None' ? 'text-blue-400 border-blue-800' : 'text-slate-400 border-slate-700'} px-1.5 py-0.5 rounded border mt-1 inline-block">${item.cve}</span> ${complianceBadge}</td>
                     <td class="py-3 px-6 text-center font-mono font-bold ${cvssColor}">${displayCvss}</td>
                     <td class="py-3 px-6 text-center">
                         ${displayBrs === 'Nil' 
