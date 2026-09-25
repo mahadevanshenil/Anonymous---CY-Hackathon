@@ -71,11 +71,24 @@
                         <p class="text-[10px] uppercase text-slate-400 font-bold tracking-widest">Total Vulnerabilities</p>
                         <p class="text-4xl font-light text-white mt-1" id="totalFindings">0</p>
                     </div>
+                    
+                    <!-- THE INNOVATION: Current vs Plan Toggle -->
                     <div>
-                        <p class="text-[10px] uppercase text-slate-400 font-bold tracking-widest">Cumulative Risk (BRS)</p>
-                        <p class="text-4xl font-bold text-rose-500 mt-1 drop-shadow-[0_0_8px_rgba(244,63,94,0.3)]" id="totalBRS">0.0</p>
+                        <div class="flex items-center justify-between mb-1">
+                            <p class="text-[10px] uppercase text-slate-400 font-bold tracking-widest transition-all" id="scoreModeLabel">Current Score</p>
+                            <label class="relative inline-flex items-center cursor-pointer" title="Toggle Planning Mode">
+                                <input type="checkbox" id="scoreToggle" class="sr-only peer">
+                                <div class="w-7 h-4 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-blue-600"></div>
+                                <span class="ml-2 text-[9px] font-bold uppercase text-slate-400">Plan</span>
+                            </label>
+                        </div>
+                        <p class="flex items-baseline gap-1" id="cyberScoreContainer">
+                            <span id="cyberScoreVal" class="text-4xl font-bold text-white transition-colors duration-500">850</span>
+                            <span class="text-xl font-light text-slate-500"> / 850</span>
+                        </p>
                     </div>
-                    <div class="col-span-2">
+                    
+                    <div class="col-span-2 mt-2">
                         <p class="text-[10px] uppercase text-slate-400 font-bold tracking-widest">Sprint 1 Risk Mitigation ROI</p>
                         <div class="w-full bg-slate-800 rounded-full h-2.5 mt-2 overflow-hidden">
                             <div class="bg-emerald-500 h-2.5 rounded-full transition-all duration-700" id="roiBar" style="width: 0%"></div>
@@ -129,6 +142,16 @@
                 </div>
             </div>
 
+            <!-- MANDATORY FEATURE: Open Ports Attack Surface Section -->
+            <div class="bg-bank-panel border border-bank rounded-xl p-6 shadow-xl hidden" id="portsSection">
+                <h3 class="font-bold text-white flex items-center gap-2 text-sm uppercase tracking-wide border-b border-bank pb-3 mb-4">
+                    <i data-lucide="server" class="w-4 h-4 text-bank-gold"></i> Attack Surface: Open Ports & Services
+                </h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4" id="portsContainer">
+                    <!-- Ports get injected here -->
+                </div>
+            </div>
+
             <div class="bg-bank-panel border border-bank rounded-xl overflow-hidden shadow-xl">
                 <div class="px-6 py-4 border-b border-bank bg-[#0f1629] flex justify-between items-center">
                     <h3 class="font-bold text-white flex items-center gap-2 text-sm uppercase tracking-wide">
@@ -157,6 +180,7 @@
     <script>
         lucide.createIcons();
         let rawFindings = []; 
+        let rawPorts = []; 
         let riskChartInstance = null; 
 
         document.getElementById("scanForm").addEventListener("submit", async (e) => {
@@ -185,19 +209,18 @@
                 const data = await response.json();
                 if (!response.ok) throw new Error(data.error || "Server connection failed.");
 
+                rawPorts = data.open_ports || [];
+
                 rawFindings = data.sprints
                     .filter(s => s.status !== "pending" && s.status !== "empty" && s.status !== "secure")
                     .map((s, index) => {
-                        // Extract CVSS Score
                         const cvssMatch = s.finding.match(/CVSS:\s*([0-9.]+)/);
                         const rawCvss = cvssMatch ? parseFloat(cvssMatch[1]) : 0.0;
                         
-                        // Extract the new CVE ID string
                         const cveMatch = s.finding.match(/CVE:\s*([^|]+)/);
                         const cveId = cveMatch ? cveMatch[1].trim() : "Info / Unscored";
 
                         const engEffort = 4;
-
                         let parsedUrl;
                         try { parsedUrl = new URL(urlInput); } catch { parsedUrl = { hostname: urlInput }; }
 
@@ -206,16 +229,17 @@
                             asset: parsedUrl.hostname,
                             ip: document.getElementById("scanType").value + " Execution",
                             title: s.name,
-                            cve: cveId, // Dynamic CVE injection
+                            cve: cveId,
                             cvss: rawCvss,
                             crit: 1.5, 
                             exp: s.severity === "high" ? 1.5 : 1.0, 
-                            effort: engEffort
+                            effort: engEffort,
+                            port: s.port
                         };
                     });
 
-                if(rawFindings.length === 0) {
-                    throw new Error("Target scanned successfully, but no vulnerabilities were found.");
+                if(rawFindings.length === 0 && rawPorts.length === 0) {
+                    throw new Error("Target scanned successfully, but no vulnerabilities or open ports were found.");
                 }
 
                 updateUI(); 
@@ -251,7 +275,6 @@
 
         function allocateSprints(findings, capacity) {
             let sorted = [...findings].sort((a, b) => {
-                // If CVSS is 0.0, push it to the very bottom of the priority queue
                 if (a.cvss === 0 && b.cvss > 0) return 1;
                 if (b.cvss === 0 && a.cvss > 0) return -1;
                 return (b.brs / b.effort) - (a.brs / a.effort);
@@ -261,7 +284,7 @@
             let s2 = { tasks: [], remaining: capacity, riskCleared: 0 };
 
             sorted.forEach(task => {
-                if (task.cvss > 0) { // Only schedule real risks for engineering time
+                if (task.cvss > 0) {
                     if (task.effort <= s1.remaining) {
                         s1.tasks.push(task);
                         s1.remaining -= task.effort;
@@ -274,6 +297,51 @@
                 }
             });
             return { s1, s2 };
+        }
+
+        function renderOpenPorts(findings) {
+            const portsSection = document.getElementById('portsSection');
+            const portsContainer = document.getElementById('portsContainer');
+            
+            if (!rawPorts || rawPorts.length === 0) {
+                portsSection.classList.add('hidden');
+                return;
+            }
+
+            portsSection.classList.remove('hidden');
+            
+            portsContainer.innerHTML = rawPorts.map(portObj => {
+                const attachedVulns = findings.filter(f => f.port === portObj.port && f.cve !== 'Info / Unscored' && f.cve !== 'None');
+                
+                let statusHtml = '';
+                let borderColor = 'border-bank';
+                
+                if (attachedVulns.length > 0) {
+                    const cves = [...new Set(attachedVulns.map(v => v.cve))].join(', ');
+                    borderColor = 'border-rose-500/50';
+                    statusHtml = `<span class="text-rose-400 font-bold flex items-center gap-1 text-xs mt-2"><i data-lucide="alert-triangle" class="w-3 h-3"></i> Outdated / Vulnerable: ${cves}</span>`;
+                } else if (portObj.is_secure_wrapped) {
+                    borderColor = 'border-emerald-500/50';
+                    statusHtml = `<span class="text-emerald-400 font-bold flex items-center gap-1 text-xs mt-2"><i data-lucide="shield-check" class="w-3 h-3"></i> Defense in Depth (Version Obscured)</span>`;
+                } else {
+                    borderColor = 'border-slate-500/50';
+                    statusHtml = `<span class="text-slate-400 font-bold flex items-center gap-1 text-xs mt-2"><i data-lucide="check-circle" class="w-3 h-3"></i> Version Up-to-Date (No CVEs)</span>`;
+                }
+
+                return `
+                <div class="bg-[#0b1021] p-4 rounded border ${borderColor} flex flex-col justify-between">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <span class="bg-slate-800 text-slate-300 px-2 py-0.5 rounded text-[10px] font-mono border border-slate-700">PORT ${portObj.port}</span>
+                            <h4 class="text-sm font-bold text-white mt-2">${portObj.service}</h4>
+                        </div>
+                    </div>
+                    <div>
+                        <p class="text-xs font-mono text-blue-400 mt-1">${portObj.version}</p>
+                        ${statusHtml}
+                    </div>
+                </div>`;
+            }).join('');
         }
 
         function drawPredictiveChart(y0, y1, y2) {
@@ -309,35 +377,14 @@
                 options: { 
                     responsive: true, 
                     maintainAspectRatio: false, 
-                    plugins: { 
-                        legend: { display: false },
-                        tooltip: {
-                            callbacks: {
-                                label: function(context) {
-                                    return context.parsed.y.toFixed(1) + ' Residual BRS';
-                                }
-                            }
-                        }
-                    }, 
-                    scales: { 
-                        y: { 
-                            beginAtZero: true,
-                            border: { display: false }, 
-                            grid: { color: 'rgba(255, 255, 255, 0.05)' }, 
-                            ticks: { color: '#64748b' } 
-                        }, 
-                        x: { 
-                            border: { display: false }, 
-                            grid: { display: false }, 
-                            ticks: { color: '#9aa4d1', font: { weight: 'bold' } } 
-                        } 
-                    } 
+                    plugins: { legend: { display: false }, tooltip: { callbacks: { label: function(context) { return context.parsed.y.toFixed(1) + ' Residual BRS'; } } } }, 
+                    scales: { y: { beginAtZero: true, border: { display: false }, grid: { color: 'rgba(255, 255, 255, 0.05)' }, ticks: { color: '#64748b' } }, x: { border: { display: false }, grid: { display: false }, ticks: { color: '#9aa4d1', font: { weight: 'bold' } } } } 
                 }
             });
         }
 
         function updateUI() {
-            if (rawFindings.length === 0) return; 
+            if (rawFindings.length === 0 && rawPorts.length === 0) return;
 
             const capacity = parseInt(document.getElementById('capacitySlider').value);
             document.getElementById('capacityDisplay').innerText = capacity + " hrs";
@@ -345,9 +392,10 @@
             const findings = processFindings();
             const plan = allocateSprints(findings, capacity);
             
+            renderOpenPorts(findings);
+
             const totalBRS = findings.reduce((sum, item) => sum + item.brs, 0);
             document.getElementById('totalFindings').innerText = findings.length;
-            document.getElementById('totalBRS').innerText = totalBRS.toFixed(1);
             
             const roiPercent = totalBRS > 0 ? ((plan.s1.riskCleared / totalBRS) * 100).toFixed(1) : 0;
             document.getElementById('roiBar').style.width = roiPercent + "%";
@@ -358,12 +406,38 @@
             const y2 = Math.max(0, y1 - plan.s2.riskCleared);
             drawPredictiveChart(y0, y1, y2);
 
+            // ==========================================
+            // TOGGLE LOGIC: Current vs Plan Mode
+            // ==========================================
+            const isPlanMode = document.getElementById('scoreToggle').checked;
+            
+            let currentScore = Math.max(300, Math.round(850 - (y0 * 15)));
+            let projectedScore = Math.max(300, Math.round(850 - (y1 * 15)));
+            
+            let activeScore = isPlanMode ? projectedScore : currentScore;
+            
+            document.getElementById('scoreModeLabel').innerText = isPlanMode ? "Projected Post-Sprint" : "Current Score";
+            document.getElementById('scoreModeLabel').className = isPlanMode ? "text-[10px] uppercase text-blue-400 font-bold tracking-widest transition-all" : "text-[10px] uppercase text-slate-400 font-bold tracking-widest transition-all";
+
+            let scoreColorClass = "text-white";
+            if (isPlanMode && activeScore === 850) {
+                scoreColorClass = "text-emerald-400 drop-shadow-[0_0_8px_rgba(52,211,153,0.3)]";
+            } else if (activeScore < 580) {
+                scoreColorClass = "text-rose-500 drop-shadow-[0_0_8px_rgba(244,63,94,0.3)]";
+            } else if (activeScore < 740) {
+                scoreColorClass = "text-amber-400 drop-shadow-[0_0_8px_rgba(251,191,36,0.3)]";
+            }
+
+            document.getElementById('cyberScoreVal').innerText = activeScore;
+            document.getElementById('cyberScoreVal').className = `text-4xl font-bold transition-colors duration-500 ${scoreColorClass}`;
+            // ==========================================
+
             document.getElementById('s1Capacity').innerHTML = plan.s1.remaining + 'h <span class="text-xs text-slate-500">remaining</span>';
             document.getElementById('sprint1Container').innerHTML = plan.s1.tasks.map(t => 
                 `<div class="bg-[#0b1021] p-3 rounded border border-blue-900/40 flex justify-between items-center transition-all">
                     <div>
                         <h4 class="text-sm font-semibold text-slate-200">${t.title}</h4>
-                        <p class="text-xs font-mono text-blue-400 mt-1">${t.asset} • ${t.effort}h Baseline</p>
+                        <p class="text-xs font-mono text-blue-400 mt-1">${t.asset}:${t.port} • ${t.effort}h Baseline</p>
                     </div>
                     <span class="bg-rose-500/10 text-rose-400 border border-rose-500/30 px-2 py-1 rounded text-xs font-bold shadow-[0_0_10px_rgba(244,63,94,0.1)]">
                         ${t.brs.toFixed(1)} BRS
@@ -376,7 +450,7 @@
                 `<div class="bg-[#0b1021]/50 p-3 rounded border border-bank flex justify-between items-center transition-all">
                     <div>
                         <h4 class="text-sm font-semibold text-slate-300">${t.title}</h4>
-                        <p class="text-xs font-mono text-slate-400 mt-1">${t.asset} • ${t.effort}h Baseline</p>
+                        <p class="text-xs font-mono text-slate-400 mt-1">${t.asset}:${t.port} • ${t.effort}h Baseline</p>
                     </div>
                     <span class="bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-1 rounded text-xs font-bold">
                         ${t.brs.toFixed(1)} BRS
@@ -384,19 +458,17 @@
                 </div>`
             ).join('') || `<div class="text-slate-500 text-sm italic flex h-full items-center justify-center">No deferred tasks fitting current capacity.</div>`;
 
-            // Updated Table Generation: Replaces 0.0 with 'Nil' and injects real CVEs
             document.getElementById('tableBody').innerHTML = findings.map(item => {
                 let shiftHtml = item.shift === 'up' ? `<span class="text-rose-500 font-bold flex items-center gap-1"><i data-lucide="chevrons-up" class="w-4 h-4"></i> Escalated</span>` : item.shift === 'down' ? `<span class="text-slate-500 font-bold flex items-center gap-1"><i data-lucide="chevrons-down" class="w-4 h-4"></i> Demoted</span>` : `<span class="text-amber-500 font-bold flex items-center gap-1"><i data-lucide="minus" class="w-4 h-4"></i> Unchanged</span>`;
                 
-                // Print Nil formatting logic
                 let displayCvss = item.cvss > 0 ? item.cvss.toFixed(1) : 'Nil';
                 let displayBrs = item.brs > 0 ? item.brs.toFixed(1) : 'Nil';
                 let cvssColor = item.cvss >= 9.0 ? 'text-rose-400' : (item.cvss > 0 ? 'text-slate-300' : 'text-slate-500 opacity-60');
 
                 return `<tr class="hover:bg-slate-800/30 transition border-b border-bank last:border-0">
                     <td class="py-3 px-6 whitespace-nowrap">${shiftHtml}</td>
-                    <td class="py-3 px-6"><div class="font-bold text-slate-200">${item.asset}</div><div class="text-[10px] font-mono text-slate-500">${item.ip}</div></td>
-                    <td class="py-3 px-6"><div class="font-medium text-slate-300">${item.title}</div><span class="text-[10px] font-mono bg-slate-800 ${item.cve !== 'None' ? 'text-blue-400 border-blue-800' : 'text-slate-400 border-slate-700'} px-1.5 py-0.5 rounded border mt-1 inline-block">${item.cve}</span></td>
+                    <td class="py-3 px-6"><div class="font-bold text-slate-200">${item.asset}</div><div class="text-[10px] font-mono text-slate-500">${item.ip} - Port ${item.port}</div></td>
+                    <td class="py-3 px-6"><div class="font-medium text-slate-300">${item.title}</div><span class="text-[10px] font-mono bg-slate-800 ${item.cve !== 'Info / Unscored' && item.cve !== 'None' ? 'text-blue-400 border-blue-800' : 'text-slate-400 border-slate-700'} px-1.5 py-0.5 rounded border mt-1 inline-block">${item.cve}</span></td>
                     <td class="py-3 px-6 text-center font-mono font-bold ${cvssColor}">${displayCvss}</td>
                     <td class="py-3 px-6 text-center">
                         ${displayBrs === 'Nil' 
@@ -412,6 +484,7 @@
 
         drawPredictiveChart(0, 0, 0);
         document.getElementById('capacitySlider').addEventListener('input', updateUI);
+        document.getElementById('scoreToggle').addEventListener('change', updateUI); // Bind the new toggle switch
     </script>
 </body>
 </html>

@@ -26,18 +26,18 @@ def is_authorized(host: str) -> bool:
     return True
 
 
-def sprint(name, status, severity, finding, fix):
+def sprint(name, status, severity, finding, fix, port="N/A"):
     return {"name": name, "status": status, "severity": severity,
-            "finding": finding, "fix": fix}
+            "finding": finding, "fix": fix, "port": port}
 
 
-def evaluate_security_headers(url):
+def evaluate_security_headers(url, port_str):
     try:
         resp = requests.get(url, timeout=10, verify=False, allow_redirects=False)
         headers = {k.lower(): v for k, v in resp.headers.items()}
     except requests.RequestException as e:
         return sprint("Security Headers", "vulnerable", "high", 
-                      f"Failed to fetch headers: {type(e).__name__} | CVE: None | CVSS: 0.0", "Verify target is reachable via HTTP/HTTPS.")
+                      f"Failed to fetch headers: {type(e).__name__} | CVE: None | CVSS: 0.0", "Verify target is reachable via HTTP/HTTPS.", port=port_str)
 
     missing = []
     highest_cvss = 0.0
@@ -52,26 +52,22 @@ def evaluate_security_headers(url):
         severity = "medium" if highest_cvss >= 4.0 else "low"
         return sprint("Security Headers", "vulnerable", severity, 
                       f"Missing: {', '.join(missing)} | CVE: HTTP-Misconfig | CVSS: {highest_cvss}", 
-                      "Configure missing HTTP headers on the server.")
+                      "Configure missing HTTP headers on the server.", port=port_str)
                       
-    return sprint("Security Headers", "secure", None, "All headers present. | CVE: None | CVSS: 0.0", "")
+    return sprint("Security Headers", "secure", None, "All headers present. | CVE: None | CVSS: 0.0", "", port=port_str)
 
 
-# ---- Enhanced Nmap Data Extraction ----
 def extract_cve_and_cvss(output):
     cve_id = "None"
     cvss_score = 0.0
     
     if isinstance(output, str):
-        # 1. Hunt for the CVE ID identifier
         cve_match = re.search(r'(?i)(CVE-\d{4}-\d+)', output)
         if cve_match:
             cve_id = cve_match.group(1).upper()
             
-        # 2. Hunt for the CVSS Score
         cvss_match = re.search(r'(?i)cvss[^0-9]*([0-9]+\.[0-9]+)', output)
         if not cvss_match:
-            # Fallback for Nmap 'vulners' format (CVE-XXXX-XXXX  7.5)
             cvss_match = re.search(r'(?i)CVE-\d{4}-\d+[^\d]+([0-9]+\.[0-9]+)', output)
             
         if cvss_match:
@@ -83,42 +79,63 @@ def extract_cve_and_cvss(output):
     return cve_id, cvss_score
 
 
-def scan_lab_target(ip_address, scan_type="T4"):
+def scan_lab_target(ip_address, target_ports, scan_type="T4"):
     nm = nmap.PortScanner()
-    
     timing_flag = "-T5" if scan_type == "T5" else "-T4"
-    print(f"[*] Initiating {timing_flag} scan on: {ip_address}")
+    print(f"[*] Initiating {timing_flag} scan on: {ip_address}:{target_ports}")
 
+    # FIX: Strict Nmap arguments without quotes to prevent python-nmap shlex crashes
     if scan_type == "T4":
         scan_args = '-sV -Pn -T4 --host-timeout 40s --script vuln'
-    elif scan_type == "T5":
-        scan_args = '-sV -Pn -T5 --script vuln'
     else:
-        scan_args = '-sV -Pn -T4 --host-timeout 40s --script vuln'
+        scan_args = '-sV -Pn -T5 --script vuln'
 
     try:
-        nm.scan(ip_address, '80,443', scan_args)
+        nm.scan(ip_address, target_ports, scan_args)
     except Exception as e:
         print(f"[!] Nmap execution error: {e}")
-        return []
+        return [], []
 
     found_vulns = []
+    open_ports = []
+
     for host in nm.all_hosts():
         for proto in nm[host].all_protocols():
             ports = nm[host][proto].keys()
             for port in ports:
-                scripts = nm[host][proto][port].get('script', {})
+                port_data = nm[host][proto][port]
+                
+                if 'open' in port_data.get('state', ''):
+                    service_name = port_data.get('name', 'unknown')
+                    product = port_data.get('product', '')
+                    version = port_data.get('version', '')
+                    
+                    display_version = f"{product} {version}".strip()
+                    is_wrapped = False
+                    
+                    if 'tcpwrapped' in service_name or 'tcpwrapped' in display_version or not display_version:
+                        is_wrapped = True
+                        display_version = "tcpwrapped (Security Plus: Version Obscured)"
+                    
+                    open_ports.append({
+                        "port": str(port),
+                        "service": service_name.upper(),
+                        "version": display_version,
+                        "is_secure_wrapped": is_wrapped
+                    })
+
+                scripts = port_data.get('script', {})
                 for script_name, output in scripts.items():
-                    # Extract both CVE ID and Score
                     cve, cvss = extract_cve_and_cvss(output)
                     found_vulns.append({
                         "host": host,
-                        "port": port,
+                        "port": str(port),
                         "finding": script_name,
                         "cve_id": cve,
                         "raw_cvss": cvss
                     })
-    return found_vulns
+                    
+    return found_vulns, open_ports
 
 
 def calculate_business_risk(vulnerability, asset_metadata):
@@ -135,6 +152,7 @@ def calculate_business_risk(vulnerability, asset_metadata):
 def run_scan(url, scan_type):
     parsed = urlparse(url)
     target_host = parsed.hostname or url.split('://')[-1].split(':')[0]
+    target_ports = str(parsed.port) if parsed.port else "80,443"
     
     lab_metadata = {
         "business_value_score": 1.0,  
@@ -144,14 +162,14 @@ def run_scan(url, scan_type):
     
     sprints = []
     
-    header_sprint = evaluate_security_headers(url)
+    header_sprint = evaluate_security_headers(url, target_ports)
     if header_sprint:
         sprints.append(header_sprint)
     
-    raw_vulns = scan_lab_target(target_host, scan_type)
+    raw_vulns, open_ports = scan_lab_target(target_host, target_ports, scan_type)
     
     if not raw_vulns:
-        sprints.append(sprint("Nmap Scan", "secure", None, "No network vulnerabilities found on 80/443. | CVE: None | CVSS: 0.0", ""))
+        sprints.append(sprint("Nmap Scan", "secure", None, "No network vulnerabilities found. | CVE: None | CVSS: 0.0", "", port=target_ports))
     else:
         scored_vulns = [calculate_business_risk(v, lab_metadata) for v in raw_vulns]
         scored_vulns.sort(key=lambda x: x['business_risk_score'], reverse=True)
@@ -160,24 +178,24 @@ def run_scan(url, scan_type):
             risk = vuln['business_risk_score']
             severity = "high" if risk >= 7.0 else "medium" if risk >= 4.0 else "low"
             
-            # Format finding to pass the CVE to the frontend
             sprints.append(sprint(
                 name=vuln['finding'][:25],
                 status="vulnerable",
                 severity=severity,
                 finding=f"Port: {vuln['port']} | CVE: {vuln['cve_id']} | CVSS: {vuln['raw_cvss']}",
-                fix="Review Nmap script output and apply patches."
+                fix="Review Nmap script output and apply patches.",
+                port=vuln['port']
             ))
             
-    return sprints
+    return sprints, open_ports
 
 
-def build_response(url, sprints):
+def build_response(url, sprints, open_ports):
     score = min(100, sum(WEIGHTS.get(s.get("severity"), 0) for s in sprints if s.get("severity")))
     level = "critical" if score >= 60 else "high" if score >= 35 else \
             "moderate" if score >= 15 else "low"
             
-    return {"target": url, "sprints": sprints,
+    return {"target": url, "sprints": sprints, "open_ports": open_ports,
             "risk": {"score": score, "level": level},
             "xp": max(0, 100 - score)}
 
@@ -204,7 +222,8 @@ def scan():
         return jsonify(error="Target not allowed."), 403
         
     try:
-        return jsonify(build_response(url, run_scan(url, scan_type)))
+        sprints, open_ports = run_scan(url, scan_type)
+        return jsonify(build_response(url, sprints, open_ports))
     except Exception as e:
         return jsonify(error=f"Scan failed: {type(e).__name__} - {str(e)}"), 502
 
