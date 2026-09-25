@@ -8,6 +8,7 @@ import urllib3
 from flask import Flask, jsonify, render_template, request
 
 import config
+from time import sleep
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
