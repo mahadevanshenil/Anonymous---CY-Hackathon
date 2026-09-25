@@ -72,7 +72,6 @@
                         <p class="text-4xl font-light text-white mt-1" id="totalFindings">0</p>
                     </div>
                     
-                    <!-- THE INNOVATION: Current vs Plan Toggle -->
                     <div>
                         <div class="flex items-center justify-between mb-1">
                             <p class="text-[10px] uppercase text-slate-400 font-bold tracking-widest transition-all" id="scoreModeLabel">Current Score</p>
@@ -142,13 +141,11 @@
                 </div>
             </div>
 
-            <!-- MANDATORY FEATURE: Open Ports Attack Surface Section -->
             <div class="bg-bank-panel border border-bank rounded-xl p-6 shadow-xl hidden" id="portsSection">
                 <h3 class="font-bold text-white flex items-center gap-2 text-sm uppercase tracking-wide border-b border-bank pb-3 mb-4">
                     <i data-lucide="server" class="w-4 h-4 text-bank-gold"></i> Attack Surface: Open Ports & Services
                 </h3>
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4" id="portsContainer">
-                    <!-- Ports get injected here -->
                 </div>
             </div>
 
@@ -220,7 +217,9 @@
                         const cveMatch = s.finding.match(/CVE:\s*([^|]+)/);
                         const cveId = cveMatch ? cveMatch[1].trim() : "Info / Unscored";
 
-                        const engEffort = 4;
+                        // FIX: Assign 4h for real vulnerabilities, and 1h manual review time for Info-level noise.
+                        const engEffort = rawCvss > 0 ? 4 : 1;
+                        
                         let parsedUrl;
                         try { parsedUrl = new URL(urlInput); } catch { parsedUrl = { hostname: urlInput }; }
 
@@ -277,23 +276,23 @@
             let sorted = [...findings].sort((a, b) => {
                 if (a.cvss === 0 && b.cvss > 0) return 1;
                 if (b.cvss === 0 && a.cvss > 0) return -1;
-                return (b.brs / b.effort) - (a.brs / a.effort);
+                let aRatio = a.effort > 0 ? (a.brs / a.effort) : 0;
+                let bRatio = b.effort > 0 ? (b.brs / b.effort) : 0;
+                return bRatio - aRatio;
             });
             
             let s1 = { tasks: [], remaining: capacity, riskCleared: 0 };
-            let s2 = { tasks: [], remaining: capacity, riskCleared: 0 };
+            let s2 = { tasks: [], riskCleared: 0 }; 
 
             sorted.forEach(task => {
-                if (task.cvss > 0) {
-                    if (task.effort <= s1.remaining) {
-                        s1.tasks.push(task);
-                        s1.remaining -= task.effort;
-                        s1.riskCleared += task.brs;
-                    } else if (task.effort <= s2.remaining) {
-                        s2.tasks.push(task);
-                        s2.remaining -= task.effort;
-                        s2.riskCleared += task.brs;
-                    }
+                // FIX: No more cvss > 0 filter here. ALL tasks can flow into Sprint 1 if capacity allows.
+                if (task.effort <= s1.remaining) {
+                    s1.tasks.push(task);
+                    s1.remaining -= task.effort;
+                    s1.riskCleared += task.brs;
+                } else {
+                    s2.tasks.push(task);
+                    s2.riskCleared += task.brs;
                 }
             });
             return { s1, s2 };
@@ -406,9 +405,6 @@
             const y2 = Math.max(0, y1 - plan.s2.riskCleared);
             drawPredictiveChart(y0, y1, y2);
 
-            // ==========================================
-            // TOGGLE LOGIC: Current vs Plan Mode
-            // ==========================================
             const isPlanMode = document.getElementById('scoreToggle').checked;
             
             let currentScore = Math.max(300, Math.round(850 - (y0 * 15)));
@@ -430,33 +426,37 @@
 
             document.getElementById('cyberScoreVal').innerText = activeScore;
             document.getElementById('cyberScoreVal').className = `text-4xl font-bold transition-colors duration-500 ${scoreColorClass}`;
-            // ==========================================
 
             document.getElementById('s1Capacity').innerHTML = plan.s1.remaining + 'h <span class="text-xs text-slate-500">remaining</span>';
-            document.getElementById('sprint1Container').innerHTML = plan.s1.tasks.map(t => 
-                `<div class="bg-[#0b1021] p-3 rounded border border-blue-900/40 flex justify-between items-center transition-all">
+            document.getElementById('sprint1Container').innerHTML = plan.s1.tasks.map(t => {
+                // FIX: Support the grey 'Info' badge inside Sprint 1 when items flow over
+                let badgeHtml = t.brs > 0 
+                    ? `<span class="bg-rose-500/10 text-rose-400 border border-rose-500/30 px-2 py-1 rounded text-xs font-bold shadow-[0_0_10px_rgba(244,63,94,0.1)]">${t.brs.toFixed(1)} BRS</span>`
+                    : `<span class="bg-slate-700/50 text-slate-400 border border-slate-600 px-2 py-1 rounded text-xs font-bold">Info</span>`;
+                
+                return `<div class="bg-[#0b1021] p-3 rounded border border-blue-900/40 flex justify-between items-center transition-all">
                     <div>
-                        <h4 class="text-sm font-semibold text-slate-200">${t.title}</h4>
+                        <h4 class="text-sm font-semibold ${t.brs > 0 ? 'text-slate-200' : 'text-slate-400'}">${t.title}</h4>
                         <p class="text-xs font-mono text-blue-400 mt-1">${t.asset}:${t.port} • ${t.effort}h Baseline</p>
                     </div>
-                    <span class="bg-rose-500/10 text-rose-400 border border-rose-500/30 px-2 py-1 rounded text-xs font-bold shadow-[0_0_10px_rgba(244,63,94,0.1)]">
-                        ${t.brs.toFixed(1)} BRS
-                    </span>
-                </div>`
-            ).join('') || `<div class="text-slate-500 text-sm italic flex h-full items-center justify-center">All critical tasks mitigated or capacity too low.</div>`;
+                    ${badgeHtml}
+                </div>`;
+            }).join('') || `<div class="text-slate-500 text-sm italic flex h-full items-center justify-center">All critical tasks mitigated or capacity too low.</div>`;
 
-            document.getElementById('s2Capacity').innerHTML = (plan.s2.tasks.length > 0 ? "Deferred" : "Clear");
-            document.getElementById('sprint2Container').innerHTML = plan.s2.tasks.map(t => 
-                `<div class="bg-[#0b1021]/50 p-3 rounded border border-bank flex justify-between items-center transition-all">
+            document.getElementById('s2Capacity').innerHTML = (plan.s2.tasks.length > 0 ? plan.s2.tasks.length + " Tasks Backlogged" : "Clear");
+            document.getElementById('sprint2Container').innerHTML = plan.s2.tasks.map(t => {
+                let badgeHtml = t.brs > 0 
+                    ? `<span class="bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-1 rounded text-xs font-bold">${t.brs.toFixed(1)} BRS</span>`
+                    : `<span class="bg-slate-700/50 text-slate-400 border border-slate-600 px-2 py-1 rounded text-xs font-bold">Info</span>`;
+                
+                return `<div class="bg-[#0b1021]/50 p-3 rounded border border-bank flex justify-between items-center transition-all">
                     <div>
-                        <h4 class="text-sm font-semibold text-slate-300">${t.title}</h4>
-                        <p class="text-xs font-mono text-slate-400 mt-1">${t.asset}:${t.port} • ${t.effort}h Baseline</p>
+                        <h4 class="text-sm font-semibold ${t.brs > 0 ? 'text-slate-300' : 'text-slate-500'}">${t.title}</h4>
+                        <p class="text-xs font-mono text-slate-500 mt-1">${t.asset}:${t.port} • ${t.effort}h Baseline</p>
                     </div>
-                    <span class="bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-1 rounded text-xs font-bold">
-                        ${t.brs.toFixed(1)} BRS
-                    </span>
-                </div>`
-            ).join('') || `<div class="text-slate-500 text-sm italic flex h-full items-center justify-center">No deferred tasks fitting current capacity.</div>`;
+                    ${badgeHtml}
+                </div>`;
+            }).join('') || `<div class="text-slate-500 text-sm italic flex h-full items-center justify-center">No deferred tasks fitting current capacity.</div>`;
 
             document.getElementById('tableBody').innerHTML = findings.map(item => {
                 let shiftHtml = item.shift === 'up' ? `<span class="text-rose-500 font-bold flex items-center gap-1"><i data-lucide="chevrons-up" class="w-4 h-4"></i> Escalated</span>` : item.shift === 'down' ? `<span class="text-slate-500 font-bold flex items-center gap-1"><i data-lucide="chevrons-down" class="w-4 h-4"></i> Demoted</span>` : `<span class="text-amber-500 font-bold flex items-center gap-1"><i data-lucide="minus" class="w-4 h-4"></i> Unchanged</span>`;
@@ -484,7 +484,7 @@
 
         drawPredictiveChart(0, 0, 0);
         document.getElementById('capacitySlider').addEventListener('input', updateUI);
-        document.getElementById('scoreToggle').addEventListener('change', updateUI); // Bind the new toggle switch
+        document.getElementById('scoreToggle').addEventListener('change', updateUI); 
     </script>
 </body>
 </html>
